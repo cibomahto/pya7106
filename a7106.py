@@ -33,11 +33,10 @@ class A7106:
             'io2':27,   # WTR (signals that a packet was received)
             }
 
-    def __init__(self, pins={}):
+    def __init__(self, id=0x930B51DE, channel=0, packet_len=64, pins={}):
+        """ Initialize the A7106 radio """
         if pins != {}:
             self.pins = pins
-
-        print(self.pins)
 
         GPIO.setmode(GPIO.BCM)
         
@@ -52,6 +51,9 @@ class A7106:
         self.regs = load_csv_regs('a7106_registers.csv')
 
         self.setup()
+        self.set_channel(channel)
+        self.set_id(id)
+        self.set_packet_length(64)
 
     def setup(self):
         # These settings were derived from the recommended values in the datasheet, except where noted.
@@ -124,23 +126,23 @@ class A7106:
         if_cal = ord(self.read_reg(0x22))
         if if_cal & 0b00010000:
             print('Error: IF filter auto calibration failed. if_cal:0b{:08b} expected:0xxx0xxxx'.format(if_cal))
-        else:
-            print('IF filter calibrated, FB:0b{:04b} FCD:{:05b}'.format(
-                if_cal & 0b00001111,
-                ord(self.read_reg(0x23)) & 0xb00011111,
-                ))
+#        else:
+#            print('IF filter calibrated, FB:0b{:04b} FCD:{:05b}'.format(
+#                if_cal & 0b00001111,
+#                ord(self.read_reg(0x23)) & 0xb00011111,
+#                ))
 
         vco_current_cal = ord(self.read_reg(0x24))
         if vco_current_cal & 0b00010000:
             print('Error: VCO current calibration failed. vco_cal:0b{:08b} expected:0bxxxx0xxx'.format(vco_current_cal))
-        else:
-            print('VCO current calibrated, VCB:0b{:04b}'.format(vco_current_cal & 0b00001111))
+#        else:
+#            print('VCO current calibrated, VCB:0b{:04b}'.format(vco_current_cal & 0b00001111))
 
         vco_cal = ord(self.read_reg(0x25))
         if vco_cal & 0b00001000:
             print('Error: VCO single bank calibration failed. vco_cal:0b{:08b} expected:0bxxxx0xxx'.format(vco_cal))
-        else:
-            print('VCO bank calibrated, VB:0b{:03b}'.format(vco_cal & 0b00000111))
+#        else:
+#            print('VCO bank calibrated, VB:0b{:03b}'.format(vco_cal & 0b00000111))
 
     def txrx(self, data, rx_len=0):
         #GPIO.setup(self.pins['da'], GPIO.OUT)
@@ -221,7 +223,6 @@ class A7106:
         """ Set the radio id, where ID is a 32-bit number """
 
         val = struct.pack('>I',id)
-        #print(['0x{:02x}'.format(i) for i in val])
         self.write_reg(0x06, val)
         
         v = struct.unpack('>I', self.read_reg(0x06,len=4))[0]
@@ -229,20 +230,27 @@ class A7106:
         if(v != id):
             raise Exception('failed to set id, read:0x{:08x} expected:0x{:08x}'.format(v,id))
 
+    def set_packet_length(self, packet_length):
+        if (packet_length > 64) or (packet_length < 1):
+            raise Exception('Packet length out of range, got:{} min:1 max:64'.format(packet_length))
+
+        self.packet_length = packet_length
+        self.write_reg(0x03, packet_length-1)
+
     def transmit(self, data):
-        """ Transmit a data packet. The data can be up to 63 bytes in length. """
-        if len(data) > 63:
-            raise Exception('packet data too long, length:{} maximum:63'.format(len(data)))
+        """ Transmit a data packet """
+        if len(data) > self.packet_length:
+            raise Exception('packet data too long, length:{} maximum:{}'.format(len(data),self.packet_length))
 
         payload = bytearray()
-        payload.append(len(data))
         payload.extend(data)
-        payload.extend(bytes(64-len(payload)))
-        print(len(payload))
+        payload.extend(bytes(self.packet_length-len(payload)))
 
         self.strobe(0b1110) # Fifo write pointer reset
         self.write_reg(0x05, payload) # Write packet to FIFO
         self.strobe(0b1101) # TX
+        while GPIO.input(self.pins['io2']) == GPIO.HIGH:
+            pass
 
     def blocking_receive(self):
         """ Wait for one packet to be recevied """
@@ -258,10 +266,7 @@ class A7106:
 
         self.strobe(0b1111) # RX FIFO read reset
 
-        payload = self.read_reg(0x05, len=64)
-        l = int(payload[0])
-        data = payload[1:(l+1)]
-        return data
+        return self.read_reg(0x05, len=self.packet_length)
 
 if __name__ == "__main__":
     import argparse
@@ -269,21 +274,6 @@ if __name__ == "__main__":
     def tx_example():
         from datetime import datetime
     
-        r = A7106()
-        r.set_id(0x12345678)
-        
-        r.dump_regs()
-        
-        channel = 0
-        r.write_reg(0x0F, channel)
-        while True:
-            data = datetime.now().isoformat().encode('utf-8')
-            print('sending packet, data_length={} data={}'.format(len(data),data))
-            r.transmit(data)
-        
-            time.sleep(0.5)
-    
-    def rx_example():
         pins = {
                 'cs':10,
                 'ck':9,
@@ -292,15 +282,25 @@ if __name__ == "__main__":
                 'io2':6,
                 }
         r = A7106(pins=pins)
-        r.set_id(0x12345678)
         
-        r.dump_regs()
+        while True:
+            data = datetime.now().isoformat().encode('utf-8')
+            payload = bytearray()
+            payload.append(len(data))
+            payload.extend(data)
+            print('sending packet, data_length={} data={}'.format(len(data),data))
+            r.transmit(payload)
         
-        channel = 0
-        r.write_reg(0x0F, channel)
+            time.sleep(0.5)
+    
+    def rx_example():
+        r = A7106()
+        
         while True:
             try:
-                data = r.blocking_receive()
+                payload = r.blocking_receive()
+                l = int(payload[0])
+                data = payload[1:(l+1)]
                 print('got packet, data_length={} data={}'.format(len(data), data))
             except RxError as e:
                 print(e)
