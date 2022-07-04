@@ -15,15 +15,25 @@ Solder jumpers to the six test pads.
 
 ![Pi wirings](images/pi.jpg)
 
-Connect the radio to the Pi:
+Connect the radio to the Pi using the RX pins.
+If you have two radios for transceiver testing, connect the second to the TX pins.
 
-* `VCC` -> 3.3V on the Pi header
-* `CS` -> Pi pin 2: Chip Select
-* `CK` -> Pi pin 3: Clock
-* `DA` -> Pi pin 4: Data from Pi to radio
-* `GND` -> Any of the ground pins on the Pi header
-* `IO1` -> Pi pin 17: Data from radio to Pi, after configuration
-* `IO2` -> Pi pin 27: `WTR` signal from Radio to Pi, high when TX/RX are completed
+| Signal | Pi RX pin | Pi TX pin | Notes |
+|--------|-----------|-----------|-------|
+| `VCC`  |           |           | 3.3V on the Pi header
+| `CS`   | `GPIO2`   | `GPIO10`  | Chip Select
+| `CK`   | `GPIO3`   | `GPIO9`   | Clock
+| `DA`   | `GPIO4`   | `GPIO11`  | Data from Pi to radio
+| `GND`  |           |           | Any of the ground pins on the Pi header
+| `IO1`  | `GPIO17`  | `GPIO5`   | Data from radio to Pi, after configuration
+| `IO2`  | `GPIO27`  | `GPIO6`   | `WTR` signal from Radio to Pi, high when TX/RX are completed
+
+## Running the RX server
+
+```
+./a7106.py --mode rx
+```
+
 
 
 ## References
