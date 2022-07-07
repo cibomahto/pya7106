@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import RPi.GPIO as GPIO
+import spidev
 import csv
 import struct
 import time
@@ -33,18 +34,31 @@ class A7106:
             'io2':27,   # WTR (signals that a packet was received)
             }
 
-    def __init__(self, id=0x930B51DE, channel=0, packet_len=64, pins={}):
+    def __init__(self, id=0x930B51DE, channel=0, packet_len=64, pins={}, spi=[]):
         """ Initialize the A7106 radio """
-        if pins != {}:
+        if spi != []:
+            self.spi_dev = spi
+            self.mode = 'spi'
+            self.pins = {'io2':7}
+        elif pins != {}:
             self.pins = pins
+            self.mode = 'gpio'
+        else:
+            self.mode = 'gpio'
 
         GPIO.setmode(GPIO.BCM)
-        
-        GPIO.setwarnings(False) 
-        GPIO.setup(self.pins['cs'], GPIO.OUT, initial = GPIO.HIGH)
-        GPIO.setup(self.pins['ck'], GPIO.OUT, initial = GPIO.LOW)
-        GPIO.setup(self.pins['da'], GPIO.OUT, initial = GPIO.LOW)
-        GPIO.setup(self.pins['io1'], GPIO.IN)
+        GPIO.setwarnings(False)
+
+        if self.mode == 'gpio':
+            GPIO.setup(self.pins['cs'], GPIO.OUT, initial = GPIO.HIGH)
+            GPIO.setup(self.pins['ck'], GPIO.OUT, initial = GPIO.LOW)
+            GPIO.setup(self.pins['da'], GPIO.OUT, initial = GPIO.LOW)
+            GPIO.setup(self.pins['io1'], GPIO.IN)
+
+        if self.mode == 'spi':
+            self.spi = spidev.SpiDev(*self.spi_dev)
+            self.spi.max_speed_hz = 20000000
+
         GPIO.setup(self.pins['io2'], GPIO.IN)
         GPIO.setwarnings(True)
 
@@ -145,37 +159,50 @@ class A7106:
 #            print('VCO bank calibrated, VB:0b{:03b}'.format(vco_cal & 0b00000111))
 
     def txrx(self, data, rx_len=0):
-        #GPIO.setup(self.pins['da'], GPIO.OUT)
+        if self.mode == 'gpio':
+    
+            #GPIO.setup(self.pins['da'], GPIO.OUT)
+            GPIO.output(self.pins['cs'], GPIO.LOW)
+            for d in data:
+                for b in '{:08b}'.format(d):
+                    GPIO.output(self.pins['ck'], GPIO.LOW)
+    
+                    if b=='0':
+                        GPIO.output(self.pins['da'], GPIO.LOW)
+                    else:
+                        GPIO.output(self.pins['da'], GPIO.HIGH)
+                    GPIO.output(self.pins['ck'], GPIO.HIGH)
+    
+            #GPIO.setup(self.pins['da'], GPIO.IN)
+            GPIO.output(self.pins['ck'], GPIO.LOW)
+    
+            rx_data = bytearray()
+            for i in range(0, rx_len):
+                din = 0;
+                for b in range(0,8):
+                    GPIO.output(self.pins['ck'], GPIO.HIGH)
+                    din = din << 1
+    
+                    #if GPIO.input(self.pins['da']) == GPIO.HIGH:
+                    if GPIO.input(self.pins['io1']) == GPIO.HIGH:
+                        din = din | 1
+                    GPIO.output(self.pins['ck'], GPIO.LOW)
+                rx_data.append(din)    
+    
+            GPIO.output(self.pins['cs'], GPIO.HIGH)
+            return rx_data
+        elif self.mode == 'spi':
+            if rx_len == 0:
+                self.spi.writebytes(data)
+            else:
+                data.extend(bytes(rx_len))
+                ret = self.spi.xfer(data)
+                rx_data = ret[(len(data)-rx_len):]
+                #print(len(data), rx_len, type(ret), len(ret), ret, type(rx_data), len(rx_data), rx_data)
+                return bytes(rx_data)
 
-        GPIO.output(self.pins['cs'], GPIO.LOW)
-        for d in data:
-            for b in '{:08b}'.format(d):
-                GPIO.output(self.pins['ck'], GPIO.LOW)
-
-                if b=='0':
-                    GPIO.output(self.pins['da'], GPIO.LOW)
-                else:
-                    GPIO.output(self.pins['da'], GPIO.HIGH)
-                GPIO.output(self.pins['ck'], GPIO.HIGH)
-
-        #GPIO.setup(self.pins['da'], GPIO.IN)
-        GPIO.output(self.pins['ck'], GPIO.LOW)
-
-        rx_data = bytearray()
-        for i in range(0, rx_len):
-            din = 0;
-            for b in range(0,8):
-                GPIO.output(self.pins['ck'], GPIO.HIGH)
-                din = din << 1
-
-                #if GPIO.input(self.pins['da']) == GPIO.HIGH:
-                if GPIO.input(self.pins['io1']) == GPIO.HIGH:
-                    din = din | 1
-                GPIO.output(self.pins['ck'], GPIO.LOW)
-            rx_data.append(din)    
-
-        GPIO.output(self.pins['cs'], GPIO.HIGH)
-        return rx_data
+        else:
+            raise Exception('Communications mode not configured correctly!')
 
     def write_reg(self, address, data):
         """ Write a value into a register. Accepts an integer from 0-255 for single byte writes, or a byte array for multiple byte writes """
@@ -225,10 +252,10 @@ class A7106:
         val = struct.pack('>I',id)
         self.write_reg(0x06, val)
         
-        v = struct.unpack('>I', self.read_reg(0x06,len=4))[0]
-        
-        if(v != id):
-            raise Exception('failed to set id, read:0x{:08x} expected:0x{:08x}'.format(v,id))
+#        v = struct.unpack('>I', self.read_reg(0x06,len=4))[0]
+#        
+#        if(v != id):
+#            raise Exception('failed to set id, read:0x{:08x} expected:0x{:08x}'.format(v,id))
 
     def set_packet_length(self, packet_length):
         if (packet_length > 64) or (packet_length < 1):

@@ -4,7 +4,7 @@ import time
 
 class eink_server:
     def __init__(self, gateway_id=0x930B51DE, channel=0):
-        self.radio = a7106.A7106()
+        self.radio = a7106.A7106(spi=[0,0])
 
         self.gateway_id = gateway_id
         self.radio.set_id(self.gateway_id)
