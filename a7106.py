@@ -57,7 +57,7 @@ class A7106:
 
         if self.mode == 'spi':
             self.spi = spidev.SpiDev(*self.spi_dev)
-            self.spi.max_speed_hz = 20000000
+            self.spi.max_speed_hz = 10000000
 
         GPIO.setup(self.pins['io2'], GPIO.IN)
         GPIO.setwarnings(True)
@@ -251,7 +251,7 @@ class A7106:
 
         val = struct.pack('>I',id)
         self.write_reg(0x06, val)
-        
+
 #        v = struct.unpack('>I', self.read_reg(0x06,len=4))[0]
 #        
 #        if(v != id):
@@ -269,13 +269,28 @@ class A7106:
         if len(data) > self.packet_length:
             raise Exception('packet data too long, length:{} maximum:{}'.format(len(data),self.packet_length))
 
-        payload = bytearray()
-        payload.extend(data)
-        payload.extend(bytes(self.packet_length-len(payload)))
+        if self.mode == 'spi':
+            # Send the whole TX sequence at once to avoid long turnarounds when calling the SPI driver.
+            # Especially due to this SPI bug: https://github.com/doceme/py-spidev/issues/117
+            cmd = bytearray()
+            cmd.append(0b1110 << 4) # Strobe: FIFO write pointer reset
+            cmd.append(0x05) # Write message register
+            cmd.extend(data) # data to transfer
+            cmd.extend(bytes(self.packet_length - len(data))) # Fill remaining space with 0s to avoid leaking stale data
 
-        self.strobe(0b1110) # Fifo write pointer reset
-        self.write_reg(0x05, payload) # Write packet to FIFO
-        self.strobe(0b1101) # TX
+            self.spi.xfer(cmd)
+
+            self.strobe(0b1101) # TX
+
+        else:
+            payload = bytearray()
+            payload.extend(data)
+            payload.extend(bytes(self.packet_length-len(data)))
+
+            self.strobe(0b1110) # Fifo write pointer reset
+            self.write_reg(0x05, payload) # Write packet to FIFO
+            self.strobe(0b1101) # TX
+
         while GPIO.input(self.pins['io2']) == GPIO.HIGH:
             pass
 
@@ -285,15 +300,37 @@ class A7106:
         while GPIO.input(self.pins['io2']) == GPIO.HIGH:
             pass
 
-        mode_reg = ord(self.read_reg(0x00))
-        if mode_reg & 0b00100000:
-            raise RxError('CRC error on receive')
-        if mode_reg & 0b01000000:
-            raise RxError('FEC error on receive')
+        if self.mode == 'spi':
+            # Send the whole RX sequence at once to avoid long turnarounds when calling the SPI driver.
+            # Especially due to this SPI bug: https://github.com/doceme/py-spidev/issues/117
+            cmd = bytearray()
+            cmd.append(0b1111 << 4) # Strobe: RX fifo read reset
+            cmd.append((1<<6) | 0x00) # Read register 0
+            cmd.append(0) # dummy byte for reading register 0
+            cmd.append((1<<6) | 0x05) # read message register
+            cmd.extend(bytes(self.packet_length)) # dummy bytes for reading message
 
-        self.strobe(0b1111) # RX FIFO read reset
+            ret = bytes(self.spi.xfer(cmd))
 
-        return self.read_reg(0x05, len=self.packet_length)
+            mode_reg = ret[2]
+            if mode_reg & 0b00100000:
+                raise RxError('CRC error on receive')
+            if mode_reg & 0b01000000:
+                raise RxError('FEC error on receive')
+
+            #return self.read_reg(0x05, len=self.packet_length)
+            return ret[4:]
+
+        else:
+            mode_reg = ord(self.read_reg(0x00))
+            if mode_reg & 0b00100000:
+                raise RxError('CRC error on receive')
+            if mode_reg & 0b01000000:
+                raise RxError('FEC error on receive')
+
+            self.strobe(0b1111) # RX FIFO read reset
+
+            return self.read_reg(0x05, len=self.packet_length)
 
 if __name__ == "__main__":
     import argparse
